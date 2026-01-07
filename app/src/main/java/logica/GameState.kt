@@ -28,48 +28,58 @@ class GameState {
     var winner by mutableStateOf("")
     var isTwoPlayerMode by mutableStateOf(false)
     var isPaused by mutableStateOf(false)
+    var countdownValue by mutableIntStateOf(3)
+
+    // Contador interno para que pase 1 segundo real (60 frames)
+    private var framesCounter = 0
 
     fun update() {
         if (isGameOver) return
         if (isPaused || isGameOver) return
+        if (countdownValue > 0) {
+            framesCounter++
+            if (framesCounter >= 60) { // Un segundo aprox
+                countdownValue--
+                framesCounter = 0
+            }
+            return // <--- IMPORTANTE: No mover la bola si estamos contando
+        }
 
 
         ballX += ballVx
         ballY += ballVy
 
-        // 1. Rebote en techo y suelo
+        // Rebote en techo y suelo
         if (ballY <= 2f || ballY >= 98f) ballVy *= -1
 
-        // 2. Colisión con Pala Jugador (Izquierda)
+        // Colisión con Pala Jugador (Izquierda)
         if (ballX <= 5f && ballX > 2f && ballY in paddle1Y..(paddle1Y + paddle1Height)) {
             ballVx = Math.abs(ballVx) * 1.05f
             ballX = 5.1f // Para que no se quede trabada
         }
 
-        // 3. Colisión con Pala IA (Derecha)
+        // Colisión con Pala IA
         if (ballX >= 95f && ballX < 98f && ballY in paddle2Y..(paddle2Y + 15f)) {
             ballVx = -Math.abs(ballVx) * 1.05f
             ballX = 94.9f
         }
 
-        // 4. IA básica
+        // IA básica
         if (!isTwoPlayerMode) {
-            if (ballY > paddle2Y + 7.5f) paddle2Y += 0.6f
-            else paddle2Y -= 0.6f
-            paddle2Y = paddle2Y.coerceIn(0f, 85f)
+            moveAI()
         }
 
-        // 5. Gestión de Power-ups (la función que ya tenías)
+
         managePowerUps()
 
-        // 6. ANOTACIÓN (Aquí es donde se llama a resetBall)
+
         if (ballX < 0f) {
             scoreIA++
             if (scoreIA >= 10) {
                 isGameOver = true
                 winner = "IA"
             } else {
-                resetBall(toPlayer = true)
+                startCountdown(toPlayer = true)
             }
         } else if (ballX > 100f) {
             scorePlayer++
@@ -77,25 +87,53 @@ class GameState {
                 isGameOver = true
                 winner = "PLAYER"
             } else {
-                resetBall(toPlayer = false)
+                startCountdown(toPlayer = true)
             }
         }
     }
 
-    // --- AQUÍ ESTABA EL ERROR: Agregamos el parámetro (toPlayer: Boolean) ---
-    private fun resetBall(toPlayer: Boolean) {
-        ballX = 50f
-        ballY = 50f
-        // Si toPlayer es true, la bola va hacia el jugador (Vx negativa)
-        ballVx = if (toPlayer) -0.9f else 0.9f
-        ballVy = if (Random.nextBoolean()) 0.7f else -0.7f
+    // --- LÓGICA DE IA MEJORADA (Con recuperación al centro) ---
+    private fun moveAI() {
+        val aiHeight = 15f // Altura de la pala de la IA
+        val paddleCenter = paddle2Y + (aiHeight / 2)
+        val screenCenter = 50f
 
-        // Reset opcional de power-ups al anotar
-        paddle1Height = 15f
-        powerUpTimer = 0
+        // Variable para decidir a dónde quiere ir la IA
+        val targetY: Float
+        val speed: Float
+
+        // CASO 1: La pelota viene hacia la IA (Ataque/Defensa)
+        if (ballVx > 0) {
+            // Intentar seguir la pelota
+            targetY = ballY
+            // Velocidad rápida para alcanzar la bola
+            speed = 1.5f
+        }
+        // CASO 2: La pelota se aleja hacia el jugador (Recuperación)
+        else {
+            // Volver al centro para estar listo
+            targetY = screenCenter
+            // Velocidad más relajada para volver a posición
+            speed = 0.60f
+        }
+
+        // Lógica de movimiento suave (Interpolación)
+        val diff = targetY - paddleCenter
+
+        // "Zone Muerta": Si está cerca del objetivo (a menos de 1.5 unidades), no se mueve para evitar temblores
+        if (Math.abs(diff) > 1.5f) {
+            if (diff > 0) {
+                paddle2Y += speed
+            } else {
+                paddle2Y -= speed
+            }
+        }
+
+        // Mantener dentro de la pantalla
+        paddle2Y = paddle2Y.coerceIn(0f, 100f - aiHeight)
     }
 
-    // Asegúrate de tener la función managePowerUps() abajo...
+
 
     private fun managePowerUps() {
         // Aparecer un power-up aleatoriamente si no hay uno
@@ -119,16 +157,21 @@ class GameState {
         }
     }
 
-    private fun resetBall() {
+    // Función auxiliar: Solo coloca la bola y define dirección, pero NO mueve nada aún
+    private fun setupBall(toPlayer: Boolean) {
         ballX = 50f
         ballY = 50f
-        // Invertimos la dirección para que saque el que recibió el punto
-        ballVx = if (ballVx > 0) -0.9f else 0.9f
-        ballVy = if (Random.nextBoolean()) 0.7f else -0.7f
 
-        // Reset de power-ups al anotar (opcional, para equilibrar)
+        // Si va al jugador (true) => Velocidad negativa en X
+        ballVx = if (toPlayer) -0.9f else 0.9f
+
+        // Y aleatoria en Y
+        ballVy = if (kotlin.random.Random.nextBoolean()) 0.7f else -0.7f
+
+        // Reset de Power-Ups (limpieza)
         paddle1Height = 15f
         powerUpTimer = 0
+        isPowerUpVisible = false
     }
 
     fun restartGame() {
@@ -136,9 +179,20 @@ class GameState {
         scoreIA = 0
         isGameOver = false
         winner = ""
-        resetBall(toPlayer = true)
+        setupBall(toPlayer = true)
     }
     fun togglePause() {
         isPaused = !isPaused
+    }
+
+    fun startCountdown(toPlayer: Boolean) {
+        // 1. Llamamos a la función que resetea la posición (la que arreglamos antes)
+        setupBall(toPlayer)
+
+        // 2. Iniciamos el conteo en 3
+        countdownValue = 3
+
+        // 3. Reseteamos el contador de frames
+        framesCounter = 0
     }
 }
